@@ -1,1 +1,11 @@
+__pycache__/
+.venv/
+*.ipynb_checkpoints/
+data/*.csv
+data/log_file.log
+model/*.cbm
+model/*.json
+dist/
+build/
+
 /.idea
