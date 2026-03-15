@@ -5,8 +5,11 @@ import argparse
 from dataclasses import dataclass
 from typing import List, Optional
 
+import numpy as np
 import pandas as pd
 from catboost import CatBoostClassifier
+from sklearn.metrics import log_loss
+from sklearn.model_selection import StratifiedKFold
 
 LOG_PATH = "./data/log_file.log"
 DATA_DIR = "./data"
@@ -39,17 +42,23 @@ class ArtifactsMeta:
     classes: List[str]
 
 class My_Classifier_Model:
-    def __init__(self):
+    def __init__(self, device: str = "cpu"):
+        self.device = device
         self.params = {
             "loss_function": "MultiClass",
             "eval_metric": "MultiClass",
-            "iterations": 1500,
-            "learning_rate": 0.03,
+            "iterations": 1200,
+            "learning_rate": 0.02,
             "depth": 6,
             "l2_leaf_reg": 5.0,
-            "random_seed": 42,
+            "random_seed": 113,
             "verbose": 200,
+            "task_type": "GPU" if device == "gpu" else "CPU"
         }
+
+        if device == "gpu":
+            self.params["devices"] = "0"
+
         self.model: Optional[CatBoostClassifier] = None
         self.meta: Optional[ArtifactsMeta] = None
 
@@ -109,6 +118,7 @@ class My_Classifier_Model:
     def train(self, dataset_filename: str):
         self._ensure_dirs()
         LOGGER.info(f"TRAIN started. dataset={dataset_filename}")
+        LOGGER.info(f"Using device: {self.device}")
 
         try:
             df = self._read_csv(dataset_filename)
@@ -133,6 +143,30 @@ class My_Classifier_Model:
             LOGGER.info(f"Features count={len(features)} | Cat features={cat_features}")
             LOGGER.info(f"Classes={classes}")
 
+            skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+            oof = np.zeros((len(X), len(classes)), dtype=float)
+
+            for fold, (tr_idx, va_idx) in enumerate(skf.split(X, y), start=1):
+                X_tr, X_va = X.iloc[tr_idx], X.iloc[va_idx]
+                y_tr, y_va = y.iloc[tr_idx], y.iloc[va_idx]
+
+                fold_model = CatBoostClassifier(**self.params)
+                fold_model.fit(
+                    X_tr, y_tr,
+                    cat_features=cat_features,
+                    eval_set=(X_va, y_va),
+                    use_best_model=True,
+                )
+
+                proba = fold_model.predict_proba(X_va)
+                oof[va_idx] = proba
+
+                fold_loss = log_loss(y_va, proba, labels=classes)
+                LOGGER.info(f"Fold {fold} logloss: {fold_loss:.6f}")
+
+            cv_loss = log_loss(y, oof, labels=classes)
+            LOGGER.info(f"CV logloss (OOF): {cv_loss:.6f}")
+
             self.model = CatBoostClassifier(**self.params)
             self.model.fit(X, y, cat_features=cat_features)
 
@@ -153,6 +187,7 @@ class My_Classifier_Model:
     def predict(self, dataset_filename: str):
         self._ensure_dirs()
         LOGGER.info(f"PREDICT started. dataset={dataset_filename}")
+        LOGGER.info(f"Using device: {self.device}")
 
         try:
             self._load_artifacts()
@@ -192,8 +227,11 @@ def main():
     p_pred = sub.add_parser("predict")
     p_pred.add_argument("--dataset", required=True)
 
+    p_train.add_argument("--device", choices=["cpu", "gpu"], default="cpu")
+    p_pred.add_argument("--device", choices=["cpu", "gpu"], default="cpu")
+
     args = parser.parse_args()
-    model = My_Classifier_Model()
+    model = My_Classifier_Model(device=args.device)
 
     if args.command == "train":
         model.train(args.dataset)
