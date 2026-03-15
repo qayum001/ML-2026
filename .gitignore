@@ -1,0 +1,9 @@
+__pycache__/
+.venv/
+*.ipynb_checkpoints/
+/data
+data/log_file.log
+dist/
+build/
+/catboost_info
+/.idea
